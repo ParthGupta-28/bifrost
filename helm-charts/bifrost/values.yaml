@@ -1581,6 +1581,7 @@ storage:
     # maxIdleConns: 5
     # maxOpenConns: 50
     # connMaxIdleTime: "5m"  # How long an idle connection is kept (config and logs stores use separate pools).
+    # enableCrossPodSync: true  # Sync config changes across pods via PostgreSQL LISTEN/NOTIFY. Default true; set false for a single-pod deployment or an Enterprise cluster already running gossip-based config sync.
 
     # Vault store for external secret management (enterprise).
     # Resolves "vault.<path>" references in config fields at load time.

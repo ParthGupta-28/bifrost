@@ -941,6 +941,9 @@ false
 {{- if .Values.storage.configStore.connMaxIdleTime }}
 {{- $_ := set $pgConfig "conn_max_idle_time" .Values.storage.configStore.connMaxIdleTime }}
 {{- end }}
+{{- if hasKey .Values.storage.configStore "enableCrossPodSync" }}
+{{- $_ := set $pgConfig "enable_cross_pod_sync" .Values.storage.configStore.enableCrossPodSync }}
+{{- end }}
 {{- $configStore := dict "enabled" true "type" "postgres" "config" $pgConfig }}
 {{- $_ := set $config "config_store" $configStore }}
 {{- else }}
