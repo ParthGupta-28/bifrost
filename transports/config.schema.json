@@ -1860,6 +1860,11 @@
                     "description": "How long an idle physical connection is kept before being closed (Go duration string, default 5m). Without this the idle cap alone controls pool size, so bursts above max_idle_conns close and reopen connections repeatedly. Note the logs store and config store open separate pools, so a pod's connection ceiling is the sum of their max_open_conns.",
                     "pattern": "^[1-9][0-9]*(ns|us|µs|ms|s|m|h)$",
                     "default": "5m"
+                  },
+                  "enable_cross_pod_sync": {
+                    "type": "boolean",
+                    "description": "Publish and listen for config changes via PostgreSQL LISTEN/NOTIFY, so a config write on one pod (provider, virtual key, routing rule, etc.) propagates to every other pod without a restart. Default true. Turn off for a single-pod deployment (no peer to sync to) or an Enterprise cluster already running gossip-based config sync, to avoid a redundant standing connection and duplicate reloads.",
+                    "default": true
                   }
                 },
                 "required": [
