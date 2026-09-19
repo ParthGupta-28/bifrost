@@ -1,0 +1,11 @@
+---
+title: "v2.1.44"
+description: "Helm v2.1.44 changelog - 2026-09-19"
+---
+
+<Update label="Bifrost Helm" description="v2.1.44">
+
+## Changelog
+- Added `storage.configStore.enableCrossPodSync` (default `true`) — sync config changes across pods via PostgreSQL LISTEN/NOTIFY (only applies when `storage.configStore.type` is `postgres`). Set `false` for a single-pod deployment (no peer to sync to) or an Enterprise cluster already running gossip-based config sync, to avoid a redundant standing connection and duplicate reloads. Renders into `config_store.config.enable_cross_pod_sync`.
+
+</Update>
