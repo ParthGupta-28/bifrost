@@ -9,7 +9,24 @@ import (
 	"gorm.io/gorm"
 )
 
-type PostgresConfig = postgresconn.Config
+// PostgresConfig is the config-store-specific Postgres configuration:
+// the shared connection settings plus config-store-only options.
+type PostgresConfig struct {
+	postgresconn.Config
+	// EnableCrossPodSync controls whether this store publishes and listens
+	// for config changes via PostgreSQL LISTEN/NOTIFY (see pgnotify.go).
+	// Defaults to true. Turn off for a single-pod deployment (no peer to
+	// sync to) or an Enterprise cluster already running gossip-based config
+	// sync, to avoid a redundant standing connection and duplicate reloads.
+	EnableCrossPodSync *bool `json:"enable_cross_pod_sync,omitempty"`
+}
+
+// crossPodSyncEnabled reports whether the notifier/listener should be wired
+// up. Unset (nil) defaults to enabled — the common case is a multi-pod
+// deployment where this is the only cross-pod sync mechanism.
+func (c *PostgresConfig) crossPodSyncEnabled() bool {
+	return c.EnableCrossPodSync == nil || *c.EnableCrossPodSync
+}
 
 // newPostgresConfigStore creates a new Postgres config store.
 //
@@ -19,10 +36,10 @@ type PostgresConfig = postgresconn.Config
 // connections never see pre-migration schema, so their cached prepared-plans
 // stay valid for the life of the process.
 func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger schemas.Logger) (ConfigStore, error) {
-	if err := postgresconn.Validate(config, false); err != nil {
+	if err := postgresconn.Validate(&config.Config, false); err != nil {
 		return nil, err
 	}
-	dsn := postgresconn.BuildDSN(config)
+	dsn := postgresconn.BuildDSN(&config.Config)
 	logger.Debug("configstore: postgres target host=%s port=%s db=%s sslmode=%s",
 		config.Host.GetValue(), config.Port.GetValue(), config.DBName.GetValue(), config.SSLMode.GetValue())
 
@@ -36,7 +53,7 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// Throwaway pool for schema migrations. Closing it before the runtime pool
 	// opens guarantees no cached prepared-plan survives the DDL.
 	logger.Info("configstore: opening migration connection pool (if this step hangs, the database host/port is likely unreachable)")
-	mDb, err := postgresconn.Open(migrationDSN, config, newGormLogger(logger))
+	mDb, err := postgresconn.Open(migrationDSN, &config.Config, newGormLogger(logger))
 	if err != nil {
 		logger.Error("configstore: failed to open migration connection pool: %v", err)
 		return nil, err
@@ -59,12 +76,12 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 
 	// Runtime pool. Opens against post-migration schema.
 	logger.Info("configstore: opening runtime connection pool")
-	db, err := postgresconn.Open(dsn, config, newGormLogger(logger))
+	db, err := postgresconn.Open(dsn, &config.Config, newGormLogger(logger))
 	if err != nil {
 		logger.Error("configstore: failed to open runtime connection pool: %v", err)
 		return nil, err
 	}
-	if err := postgresconn.ApplyPoolTuning(db, config, logger); err != nil {
+	if err := postgresconn.ApplyPoolTuning(db, &config.Config, logger); err != nil {
 		logger.Error("configstore: failed to apply connection pool tuning: %v", err)
 		postgresconn.Close(db, logger)
 		return nil, err
@@ -78,21 +95,30 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	d := &RDBConfigStore{logger: logger}
 	d.db.Store(db)
 
-	// pg_notify publisher: uses the runtime GORM pool for NOTIFY calls.
-	d.notifier = newPGNotifier(d.DB, logger)
+	// pg_notify publisher/listener: only wired up when cross-pod sync is
+	// enabled. Off by default makes sense for a single-pod deployment (no
+	// peer to sync to) or an Enterprise cluster already running gossip-based
+	// config sync; on by default otherwise, since for a plain multi-pod
+	// Postgres deployment this is the only cross-pod sync mechanism.
+	if config.crossPodSyncEnabled() {
+		// pg_notify publisher: uses the runtime GORM pool for NOTIFY calls.
+		d.notifier = newPGNotifier(d.DB, logger)
 
-	// pg_notify listener: uses a dedicated pgx connection for LISTEN.
-	// Created here, started later by the server via ListenForChanges.
-	if listener, err := newPGListener(config, logger); err != nil {
-		logger.Warn("configstore: failed to create pg_notify listener (cross-pod sync disabled): %v", err)
+		// pg_notify listener: uses a dedicated pgx connection for LISTEN.
+		// Created here, started later by the server via ListenForChanges.
+		if listener, err := newPGListener(&config.Config, logger); err != nil {
+			logger.Warn("configstore: failed to create pg_notify listener (cross-pod sync disabled): %v", err)
+		} else {
+			d.listener = listener
+		}
 	} else {
-		d.listener = listener
+		logger.Info("configstore: cross-pod config sync disabled (enable_cross_pod_sync=false)")
 	}
 
 	// migrateOnFreshFn: downstream consumers (e.g. bifrost-enterprise) run
 	// their migrations via this hook on a throwaway pool that closes after fn.
 	d.migrateOnFreshFn = func(ctx context.Context, fn func(context.Context, *gorm.DB) error) error {
-		tempDB, err := postgresconn.Open(migrationDSN, config, newGormLogger(logger))
+		tempDB, err := postgresconn.Open(migrationDSN, &config.Config, newGormLogger(logger))
 		if err != nil {
 			return err
 		}
@@ -110,11 +136,11 @@ func newPostgresConfigStore(ctx context.Context, config *PostgresConfig, logger 
 	// sql.DB.Close blocks until in-flight queries finish, so callers already
 	// using the old pool complete safely.
 	d.refreshPoolFn = func(ctx context.Context) error {
-		newDB, err := postgresconn.Open(dsn, config, newGormLogger(logger))
+		newDB, err := postgresconn.Open(dsn, &config.Config, newGormLogger(logger))
 		if err != nil {
 			return fmt.Errorf("failed to open fresh runtime pool: %w", err)
 		}
-		if err := postgresconn.ApplyPoolTuning(newDB, config, logger); err != nil {
+		if err := postgresconn.ApplyPoolTuning(newDB, &config.Config, logger); err != nil {
 			postgresconn.Close(newDB, logger)
 			return fmt.Errorf("failed to tune fresh runtime pool: %w", err)
 		}
